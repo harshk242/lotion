@@ -156,6 +156,65 @@ function toggleAutoHideMenuBar() {
   createNativeMenuWithNavigation(); // Recreate menu to update labels
 }
 
+// Tab switching helper functions
+function switchToNextTab() {
+  const focusedWC = appController.getFocusedWindowController();
+  if (!focusedWC || !focusedWC.currentActiveTabController) return;
+
+  const state = reduxStore.getState();
+  const windowState = state.windows.windows[focusedWC.windowId];
+  if (!windowState || windowState.tabIds.length <= 1) return;
+
+  const currentTabId = focusedWC.currentActiveTabController.tabId;
+  const currentIndex = windowState.tabIds.indexOf(currentTabId);
+  const nextIndex = (currentIndex + 1) % windowState.tabIds.length;
+  const nextTabId = windowState.tabIds[nextIndex];
+
+  focusedWC.switchToTab(nextTabId);
+  notifyTabBarUpdate(focusedWC.windowId);
+}
+
+function switchToPreviousTab() {
+  const focusedWC = appController.getFocusedWindowController();
+  if (!focusedWC || !focusedWC.currentActiveTabController) return;
+
+  const state = reduxStore.getState();
+  const windowState = state.windows.windows[focusedWC.windowId];
+  if (!windowState || windowState.tabIds.length <= 1) return;
+
+  const currentTabId = focusedWC.currentActiveTabController.tabId;
+  const currentIndex = windowState.tabIds.indexOf(currentTabId);
+  const prevIndex = (currentIndex - 1 + windowState.tabIds.length) % windowState.tabIds.length;
+  const prevTabId = windowState.tabIds[prevIndex];
+
+  focusedWC.switchToTab(prevTabId);
+  notifyTabBarUpdate(focusedWC.windowId);
+}
+
+function switchToTabByIndex(index) {
+  const focusedWC = appController.getFocusedWindowController();
+  if (!focusedWC) return;
+
+  const state = reduxStore.getState();
+  const windowState = state.windows.windows[focusedWC.windowId];
+  if (!windowState || windowState.tabIds.length === 0) return;
+
+  let targetIndex;
+  if (index === -1) {
+    // -1 means last tab (Ctrl+9 behavior)
+    targetIndex = windowState.tabIds.length - 1;
+  } else {
+    targetIndex = index;
+  }
+
+  // Check if the tab exists at that index
+  if (targetIndex >= 0 && targetIndex < windowState.tabIds.length) {
+    const targetTabId = windowState.tabIds[targetIndex];
+    focusedWC.switchToTab(targetTabId);
+    notifyTabBarUpdate(focusedWC.windowId);
+  }
+}
+
 // Create a native menu with navigation controls
 function createNativeMenuWithNavigation() {
   const focusedWC = appController.getFocusedWindowController();
@@ -271,6 +330,116 @@ function createNativeMenuWithNavigation() {
         },
         { type: 'separator' },
         getSpellCheckMenu(appController)
+      ]
+    },
+    {
+      label: 'Tabs',
+      submenu: [
+        {
+          label: 'New Tab',
+          accelerator: 'CmdOrCtrl+T',
+          click: () => {
+            const focusedWC = appController.getFocusedWindowController();
+            if (focusedWC) {
+              const TabManager = require('./managers/TabManager');
+              const tabManager = TabManager.getInstance();
+              const tabController = tabManager.createTab({
+                windowId: focusedWC.windowId,
+                url: config.domainBaseUrl,
+                title: 'New Tab',
+                makeActive: true,
+              });
+              focusedWC.setActiveTab(tabController);
+              notifyTabBarUpdate(focusedWC.windowId);
+            }
+          }
+        },
+        {
+          label: 'Close Tab',
+          accelerator: 'CmdOrCtrl+W',
+          click: () => {
+            const focusedWC = appController.getFocusedWindowController();
+            if (focusedWC && focusedWC.currentActiveTabController) {
+              const tabId = focusedWC.currentActiveTabController.tabId;
+              const TabManager = require('./managers/TabManager');
+              const tabManager = TabManager.getInstance();
+              const state = reduxStore.getState();
+              const windowState = state.windows.windows[focusedWC.windowId];
+              
+              // Don't close if it's the last tab - close the window instead
+              if (windowState && windowState.tabIds.length <= 1) {
+                focusedWC.getInternalBrowserWindow()?.close();
+                return;
+              }
+              
+              // Find next tab to switch to before closing
+              const currentIndex = windowState.tabIds.indexOf(tabId);
+              const nextIndex = currentIndex > 0 ? currentIndex - 1 : 1;
+              const nextTabId = windowState.tabIds[nextIndex];
+              
+              tabManager.destroyTab(tabId);
+              focusedWC.switchToTab(nextTabId);
+              notifyTabBarUpdate(focusedWC.windowId);
+            }
+          }
+        },
+        { type: 'separator' },
+        {
+          label: 'Next Tab',
+          accelerator: 'CmdOrCtrl+Tab',
+          click: () => { switchToNextTab(); }
+        },
+        {
+          label: 'Previous Tab',
+          accelerator: 'CmdOrCtrl+Shift+Tab',
+          click: () => { switchToPreviousTab(); }
+        },
+        { type: 'separator' },
+        {
+          label: 'Tab 1',
+          accelerator: 'CmdOrCtrl+1',
+          click: () => { switchToTabByIndex(0); }
+        },
+        {
+          label: 'Tab 2',
+          accelerator: 'CmdOrCtrl+2',
+          click: () => { switchToTabByIndex(1); }
+        },
+        {
+          label: 'Tab 3',
+          accelerator: 'CmdOrCtrl+3',
+          click: () => { switchToTabByIndex(2); }
+        },
+        {
+          label: 'Tab 4',
+          accelerator: 'CmdOrCtrl+4',
+          click: () => { switchToTabByIndex(3); }
+        },
+        {
+          label: 'Tab 5',
+          accelerator: 'CmdOrCtrl+5',
+          click: () => { switchToTabByIndex(4); }
+        },
+        {
+          label: 'Tab 6',
+          accelerator: 'CmdOrCtrl+6',
+          click: () => { switchToTabByIndex(5); }
+        },
+        {
+          label: 'Tab 7',
+          accelerator: 'CmdOrCtrl+7',
+          click: () => { switchToTabByIndex(6); }
+        },
+        {
+          label: 'Tab 8',
+          accelerator: 'CmdOrCtrl+8',
+          click: () => { switchToTabByIndex(7); }
+        },
+        {
+          label: 'Last Tab',
+          accelerator: 'CmdOrCtrl+9',
+          click: () => { switchToTabByIndex(-1); }
+        }
       ]
     },
     {
