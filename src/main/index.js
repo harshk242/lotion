@@ -446,7 +446,16 @@ function createNativeMenuWithNavigation() {
       label: 'Window',
       submenu: [
         { role: 'minimize' },
-        { role: 'close' }
+        {
+          label: 'Close Window',
+          accelerator: 'CmdOrCtrl+Shift+W',
+          click: () => {
+            const focusedWindow = appController.getFocusedWindowController()?.getInternalBrowserWindow();
+            if (focusedWindow) {
+              focusedWindow.close();
+            }
+          }
+        }
       ]
     }
   ];
@@ -879,6 +888,8 @@ ipcMain.handle('tab-bar:switch-tab', async (event, tabId) => {
   const windowController = appController.windowControllers.get(tabController.windowId);
   if (windowController) {
     windowController.switchToTab(tabId);
+    // Notify tab bar of the active tab change
+    notifyTabBarUpdate(tabController.windowId);
     return { success: true };
   }
 
