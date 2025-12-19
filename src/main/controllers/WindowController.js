@@ -5,13 +5,14 @@ const { addWindow, removeWindow, setWindowFocus, updateWindowBounds, updateWindo
 const config = require('../../../config/config.json'); // Adjust path as needed
 
 class WindowController {
-  constructor({ windowId, store, initialUrl, title, bounds }) {
+  constructor({ windowId, store, initialUrl, initialTabs, title, bounds }) {
     this.windowId = windowId;
     this.store = store;
     this.browserWindow = null;
     this.tabBarView = null; // WebContentsView for tab bar UI
     this.currentActiveTabController = null; // Reference to active tab's controller
     this.initialUrl = initialUrl || config.domainBaseUrl;
+    this.initialTabs = initialTabs || null; // Array of {url, title} for restoring tabs
     this.initialTitle = title || 'Lotion';
     this.initialBounds = bounds || { width: 1200, height: 800 };
 
@@ -230,21 +231,46 @@ class WindowController {
   }
 
   /**
-   * Create initial tab when window opens
+   * Create initial tab(s) when window opens
+   * If initialTabs array is provided, restore those tabs; otherwise create single default tab
    */
   createInitialTab() {
     const TabManager = require('../managers/TabManager');
     const tabManager = TabManager.getInstance();
 
-    log.info(`Creating initial tab for window ${this.windowId}`);
-    const tabController = tabManager.createTab({
-      windowId: this.windowId,
-      url: this.initialUrl,
-      title: this.initialTitle,
-      makeActive: true,
-    });
+    // If we have saved tabs to restore, create them all
+    if (this.initialTabs && Array.isArray(this.initialTabs) && this.initialTabs.length > 0) {
+      log.info(`Restoring ${this.initialTabs.length} tabs for window ${this.windowId}`);
+      
+      let firstTabController = null;
+      this.initialTabs.forEach((tabData, index) => {
+        const tabController = tabManager.createTab({
+          windowId: this.windowId,
+          url: tabData.url || config.domainBaseUrl,
+          title: tabData.title || 'New Tab',
+          makeActive: index === 0, // Only first tab is active initially
+        });
+        
+        if (index === 0) {
+          firstTabController = tabController;
+        }
+      });
 
-    this.setActiveTab(tabController);
+      if (firstTabController) {
+        this.setActiveTab(firstTabController);
+      }
+    } else {
+      // Default: create single tab
+      log.info(`Creating initial tab for window ${this.windowId}`);
+      const tabController = tabManager.createTab({
+        windowId: this.windowId,
+        url: this.initialUrl,
+        title: this.initialTitle,
+        makeActive: true,
+      });
+
+      this.setActiveTab(tabController);
+    }
   }
 
   /**

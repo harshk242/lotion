@@ -1,11 +1,19 @@
 const { app, BrowserWindow } = require('electron');
 const log = require('electron-log').scope('AppController');
+const Store = require('electron-store');
 const { addWindow } = require('../store/slices/windowsSlice'); // Import addWindow
 const WindowController = require('./WindowController'); // Import WindowController
 const TabManager = require('../managers/TabManager'); // Import TabManager
 const { v4: uuidv4 } = require('uuid'); // For generating unique window IDs
 
 let instance = null; // For singleton pattern
+
+// electron-store for persisting tab state
+const persistStore = new Store({
+  defaults: {
+    savedTabs: [] // Array of {url, title} for tab restoration
+  }
+});
 
 class AppController {
   constructor(store) {
@@ -52,7 +60,18 @@ class AppController {
         }
       }
       
-      const options = initialUrl ? { initialUrl } : {};
+      // Try to restore saved tabs, unless a specific URL was provided
+      const options = {};
+      if (initialUrl) {
+        options.initialUrl = initialUrl;
+      } else {
+        const savedTabs = persistStore.get('savedTabs', []);
+        if (savedTabs.length > 0) {
+          log.info(`Restoring ${savedTabs.length} saved tabs`);
+          options.initialTabs = savedTabs;
+        }
+      }
+      
       this.createNewWindow(options);
     });
 
@@ -80,7 +99,9 @@ class AppController {
     this.electronApp.on('before-quit', () => {
       log.info('App before-quit event triggered in AppController');
       this.isQuitting = true;
-      // Potentially iterate over windowControllers and tell them to prepare for quit
+      
+      // Save tab state before quitting
+      this.saveTabState();
     });
   }
 
@@ -140,6 +161,37 @@ class AppController {
     // This part is tricky without fully relying on Redux state for focus source of truth.
     // For now, let's assume Redux is the source of truth for focusedWindowId
     return null;
+  }
+
+  /**
+   * Save current tab state to electron-store for persistence across restarts
+   */
+  saveTabState() {
+    try {
+      const state = this.store.getState();
+      const tabsToSave = [];
+
+      // Collect tabs from all windows (in order)
+      for (const windowId of Object.keys(state.windows.windows)) {
+        const windowState = state.windows.windows[windowId];
+        if (windowState && windowState.tabIds) {
+          for (const tabId of windowState.tabIds) {
+            const tabState = state.tabs.tabs[tabId];
+            if (tabState && tabState.url) {
+              tabsToSave.push({
+                url: tabState.url,
+                title: tabState.title || 'New Tab'
+              });
+            }
+          }
+        }
+      }
+
+      persistStore.set('savedTabs', tabsToSave);
+      log.info(`Saved ${tabsToSave.length} tabs for next session`);
+    } catch (error) {
+      log.error('Failed to save tab state:', error);
+    }
   }
 
   // getMainWindowInstance() { // This was a temporary hack and should be removed
