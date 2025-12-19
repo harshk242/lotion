@@ -138,7 +138,7 @@ class TabController {
       );
     });
 
-    // URL changed
+    // URL changed - full page navigation
     webContents.on('did-navigate', (event, url) => {
       log.debug(`Tab ${this.tabId}: Navigated to ${url}`);
       this.store.dispatch(
@@ -147,6 +147,19 @@ class TabController {
           url,
         })
       );
+    });
+
+    // URL changed - in-page navigation (SPA like Notion uses pushState/replaceState)
+    webContents.on('did-navigate-in-page', (event, url, isMainFrame) => {
+      if (isMainFrame) {
+        log.debug(`Tab ${this.tabId}: In-page navigation to ${url}`);
+        this.store.dispatch(
+          updateTabUrl({
+            tabId: this.tabId,
+            url,
+          })
+        );
+      }
     });
 
     // Favicon updated
