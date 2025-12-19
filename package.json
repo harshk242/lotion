@@ -1,7 +1,7 @@
 {
   "name": "lotion",
   "author": "Lotion Team",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "private": true,
   "description": "Unofficial Notion.so Desktop app for Linux",
   "main": "./src/main/index.js",
@@ -16,6 +16,7 @@
     "electron-log": "4.4.8",
     "electron-store": "8.2.0",
     "electron-updater": "^6.6.2",
+    "esbuild-loader": "^4.4.0",
     "fflate": "0.7.4",
     "fs-extra": "8.1.0",
     "get-port": "5.1.1",
@@ -41,6 +42,7 @@
     "dist": "electron-forge make --platform=linux",
     "playwright": "playwright test",
     "postinstall": "echo 'Lotion postinstall complete'",
+    "type-check": "tsc --noEmit",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "overrides": {

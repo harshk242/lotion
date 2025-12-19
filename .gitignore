@@ -4,6 +4,7 @@ node_modules
 out
 official_notion
 docs
+bun.lock
 
 # AUR build artifacts
 *.pkg.tar.zst

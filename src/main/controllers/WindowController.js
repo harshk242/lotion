@@ -104,6 +104,14 @@ class WindowController {
     // Note: ready-to-show doesn't fire reliably when using WebContentsView
     // We'll show the window manually after setup
 
+    this.browserWindow.on('close', (event) => {
+      // Save tab state BEFORE window closes (while tabs are still in Redux)
+      const appCtrl = require('./AppController').getInstance();
+      if (appCtrl) {
+        appCtrl.saveTabState();
+      }
+    });
+
     this.browserWindow.on('closed', () => {
       log.info(`Window ${this.windowId} closed`);
       this.store.dispatch(removeWindow(this.windowId));

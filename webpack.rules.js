@@ -20,9 +20,10 @@ module.exports = [
     test: /\.tsx?$/,
     exclude: /(node_modules|\.webpack)/,
     use: {
-      loader: 'ts-loader',
+      loader: 'esbuild-loader',
       options: {
-        transpileOnly: true,
+        loader: 'tsx',
+        target: 'es2020',
       },
     },
   },

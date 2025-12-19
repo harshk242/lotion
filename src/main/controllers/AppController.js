@@ -100,8 +100,9 @@ class AppController {
       log.info('App before-quit event triggered in AppController');
       this.isQuitting = true;
       
-      // Save tab state before quitting
-      this.saveTabState();
+      // Note: Tab state is saved in window 'close' event before window is removed from Redux
+      // We don't save here because by this point windows may have already been closed
+      // and removed from Redux, which would overwrite saved tabs with an empty array
     });
   }
 
@@ -187,8 +188,20 @@ class AppController {
         }
       }
 
-      persistStore.set('savedTabs', tabsToSave);
-      log.info(`Saved ${tabsToSave.length} tabs for next session`);
+      log.info(`Total tabs to save: ${tabsToSave.length}`);
+      
+      // Only save if we have tabs - don't overwrite with empty array
+      if (tabsToSave.length > 0) {
+        log.info(`Tabs being saved: ${JSON.stringify(tabsToSave.map(t => t.title))}`);
+        persistStore.set('savedTabs', tabsToSave);
+        
+        // Verify it was saved
+        const verification = persistStore.get('savedTabs', []);
+        log.info(`Verification - tabs in store after save: ${verification.length}`);
+      } else {
+        log.info('No tabs to save - keeping existing saved tabs');
+      }
+      log.info('======= END SAVING TAB STATE =======');
     } catch (error) {
       log.error('Failed to save tab state:', error);
     }
