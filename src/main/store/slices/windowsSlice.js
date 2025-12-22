@@ -101,10 +101,20 @@ const windowsSlice = createSlice({
     },
     // Tab management actions for windows
     addTabToWindow: (state, action) => {
-      const { windowId, tabId } = action.payload;
+      const { windowId, tabId, insertAfterTabId } = action.payload;
       if (state.windows[windowId]) {
         if (!state.windows[windowId].tabIds.includes(tabId)) {
-          state.windows[windowId].tabIds.push(tabId);
+          // Insert after specific tab if provided, otherwise append to end
+          if (insertAfterTabId) {
+            const afterIndex = state.windows[windowId].tabIds.indexOf(insertAfterTabId);
+            if (afterIndex !== -1) {
+              state.windows[windowId].tabIds.splice(afterIndex + 1, 0, tabId);
+            } else {
+              state.windows[windowId].tabIds.push(tabId);
+            }
+          } else {
+            state.windows[windowId].tabIds.push(tabId);
+          }
         }
         // Set as active if it's the first tab
         if (!state.windows[windowId].activeTabId) {

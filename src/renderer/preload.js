@@ -24,7 +24,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   refresh: () => ipcRenderer.invoke('navigation-refresh'),
 
   // Spell check dictionary selection
-  setDictionary: (dictionary) => ipcRenderer.invoke('set-dictionary', dictionary)
+  setDictionary: (dictionary) => ipcRenderer.invoke('set-dictionary', dictionary),
+
+  // Open URL in new tab (Ctrl+Click)
+  openInNewTab: (url) => ipcRenderer.invoke('open-in-new-tab', url)
 });
 
 // Log when preload script is loaded

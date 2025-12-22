@@ -50,6 +50,7 @@ class TabManager {
    * @param {string} [options.title] - Initial title
    * @param {boolean} [options.makeActive] - Whether to make this tab active
    * @param {boolean} [options.isPinned] - Whether to pin this tab
+   * @param {string} [options.insertAfterTabId] - Insert new tab after this tab ID
    * @returns {TabController} The created tab controller
    */
   createTab({
@@ -59,6 +60,7 @@ class TabManager {
     title = 'New Tab',
     makeActive = true,
     isPinned = false,
+    insertAfterTabId = null,
   }) {
     if (this.tabs.has(tabId)) {
       log.warn(`Tab ${tabId} already exists, returning existing tab`);
@@ -83,6 +85,7 @@ class TabManager {
       addTabToWindow({
         windowId,
         tabId,
+        insertAfterTabId,
       })
     );
 

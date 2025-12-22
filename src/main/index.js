@@ -555,6 +555,55 @@ ipcMain.handle('open-external', async (event, url) => {
   return { success: true };
 });
 
+// Open URL in new tab (Ctrl+Click feature)
+ipcMain.handle('open-in-new-tab', async (event, url) => {
+  const webContents = event.sender;
+  
+  // Find the window that contains this webContents
+  let windowController = null;
+  for (const wc of appController.windowControllers.values()) {
+    // Check all tabs in this window
+    const TabManager = require('./managers/TabManager');
+    const tabManager = TabManager.getInstance();
+    const tabs = tabManager.getTabsForWindow(wc.windowId);
+    
+    for (const tab of tabs) {
+      if (tab.webContentsView && tab.webContentsView.webContents === webContents) {
+        windowController = wc;
+        break;
+      }
+    }
+    if (windowController) break;
+  }
+  
+  if (!windowController) {
+    log.warn('open-in-new-tab: could not find parent window');
+    return { success: false };
+  }
+  
+  const TabManager = require('./managers/TabManager');
+  const tabManager = TabManager.getInstance();
+  
+  // Get current active tab ID to insert after it
+  const currentActiveTabId = windowController.currentActiveTabController?.tabId;
+  
+  const tabController = tabManager.createTab({
+    windowId: windowController.windowId,
+    url: url,
+    title: 'Loading...',
+    makeActive: true,
+    insertAfterTabId: currentActiveTabId,
+  });
+  
+  // Switch to the new tab
+  windowController.setActiveTab(tabController);
+  
+  // Notify tab bar of update
+  notifyTabBarUpdate(windowController.windowId);
+  
+  return { success: true, tabId: tabController.tabId };
+});
+
 // Get current theme
 ipcMain.handle('get-current-theme', () => {
   const store = new Store();

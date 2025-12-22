@@ -125,6 +125,9 @@ class TabController {
 
       // Inject custom CSS after page loads
       this.injectCustomCSS();
+
+      // Inject Ctrl+Click handler for opening links in new tab
+      this.injectCtrlClickHandler();
     });
 
     // Navigation started
@@ -277,6 +280,47 @@ class TabController {
       // Link context menu
       if (params.linkURL) {
         menu.append(new MenuItem({ type: 'separator' }));
+        
+        // Check if it's a Notion URL for "Open in New Tab" option
+        try {
+          const parsedUrl = new URL(params.linkURL);
+          const isNotionDomain =
+            parsedUrl.hostname === 'notion.so' ||
+            parsedUrl.hostname === 'www.notion.so' ||
+            parsedUrl.hostname.endsWith('.notion.so') ||
+            parsedUrl.hostname === 'notion.com' ||
+            parsedUrl.hostname === 'www.notion.com' ||
+            parsedUrl.hostname.endsWith('.notion.com');
+
+          if (isNotionDomain) {
+            menu.append(
+              new MenuItem({
+                label: 'Open Link in New Tab',
+                click: () => {
+                  const TabManager = require('../managers/TabManager');
+                  const tabManager = TabManager.getInstance();
+                  const AppController = require('./AppController');
+                  const appController = AppController.getInstance();
+                  const windowController = appController.windowControllers.get(this.windowId);
+
+                  if (windowController) {
+                    const tabController = tabManager.createTab({
+                      windowId: this.windowId,
+                      url: params.linkURL,
+                      title: 'Loading...',
+                      makeActive: true,
+                      insertAfterTabId: this.tabId,
+                    });
+                    windowController.setActiveTab(tabController);
+                  }
+                },
+              })
+            );
+          }
+        } catch (err) {
+          // Invalid URL, skip "Open in New Tab"
+        }
+
         menu.append(
           new MenuItem({
             label: 'Open Link in Browser',
@@ -399,6 +443,81 @@ class TabController {
    */
   async reloadCustomCSS() {
     await this.injectCustomCSS();
+  }
+
+  /**
+   * Inject Ctrl+Click and middle-click handler for opening links in new tabs
+   */
+  injectCtrlClickHandler() {
+    if (this.isDestroyed || !this.webContentsView) {
+      return;
+    }
+
+    const script = `
+      (function() {
+        // Avoid injecting multiple times
+        if (window.__lotionCtrlClickHandlerInjected) return;
+        window.__lotionCtrlClickHandlerInjected = true;
+
+        function openLinkInNewTab(e) {
+          // Find the closest anchor element
+          let target = e.target;
+          while (target && target.tagName !== 'A') {
+            target = target.parentElement;
+          }
+
+          if (!target || !target.href) return false;
+
+          const url = target.href;
+
+          // Check if it's a Notion URL
+          try {
+            const parsedUrl = new URL(url);
+            const isNotionDomain = 
+              parsedUrl.hostname === 'notion.so' ||
+              parsedUrl.hostname === 'www.notion.so' ||
+              parsedUrl.hostname.endsWith('.notion.so') ||
+              parsedUrl.hostname === 'notion.com' ||
+              parsedUrl.hostname === 'www.notion.com' ||
+              parsedUrl.hostname.endsWith('.notion.com');
+
+            if (isNotionDomain) {
+              e.preventDefault();
+              e.stopPropagation();
+              
+              // Use the exposed API to open in new tab
+              if (window.electronAPI && window.electronAPI.openInNewTab) {
+                window.electronAPI.openInNewTab(url);
+              }
+              return true;
+            }
+          } catch (err) {
+            // Invalid URL, ignore
+          }
+          return false;
+        }
+
+        // Handle Ctrl+Click (or Cmd+Click on Mac)
+        document.addEventListener('click', function(e) {
+          if (e.ctrlKey || e.metaKey) {
+            openLinkInNewTab(e);
+          }
+        }, true);
+
+        // Handle middle-click (mouse button 1)
+        document.addEventListener('auxclick', function(e) {
+          if (e.button === 1) {
+            openLinkInNewTab(e);
+          }
+        }, true);
+      })();
+    `;
+
+    this.webContentsView.webContents.executeJavaScript(script).catch((err) => {
+      log.error(`Tab ${this.tabId}: Error injecting Ctrl+Click handler:`, err);
+    });
+
+    log.debug(`Tab ${this.tabId}: Ctrl+Click handler injected`);
   }
 
   /**
