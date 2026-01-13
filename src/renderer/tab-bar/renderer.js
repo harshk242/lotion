@@ -5,6 +5,9 @@ let tabs = [];
 let activeTabId = null;
 let windowId = null;
 
+// Drag and drop state
+let draggedTabId = null;
+
 // Initialize on DOM load
 document.addEventListener('DOMContentLoaded', async () => {
   await loadInitialState();
@@ -93,7 +96,8 @@ function renderTab(tab) {
   return `
     <div class="tab ${isActive ? 'active' : ''} ${isPinned ? 'pinned' : ''}"
          data-tab-id="${tab.tabId}"
-         title="${escapeHtml(tab.title || 'Untitled')}">
+         title="${escapeHtml(tab.title || 'Untitled')}"
+         draggable="true">
       ${faviconHtml}
       <span class="tab-title">${escapeHtml(title)}</span>
       ${!isPinned ? `<button class="close-btn" data-tab-id="${tab.tabId}" title="Close Tab">×</button>` : ''}
@@ -117,6 +121,78 @@ function addEventListeners() {
         const tabId = tabEl.dataset.tabId;
         window.tabBarAPI.switchTab(tabId);
       }
+    });
+
+    // Drag start - store the dragged tab ID
+    tabEl.addEventListener('dragstart', (e) => {
+      draggedTabId = tabEl.dataset.tabId;
+      tabEl.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', draggedTabId);
+    });
+
+    // Drag end - clean up
+    tabEl.addEventListener('dragend', () => {
+      tabEl.classList.remove('dragging');
+      draggedTabId = null;
+      // Remove all drag-over classes
+      document.querySelectorAll('.tab').forEach(t => {
+        t.classList.remove('drag-over-left', 'drag-over-right');
+      });
+    });
+
+    // Drag over - allow drop and show indicator
+    tabEl.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+
+      // Don't show indicator on the dragged tab itself
+      if (tabEl.dataset.tabId === draggedTabId) return;
+
+      // Determine if dropping on left or right side of the tab
+      const rect = tabEl.getBoundingClientRect();
+      const midpoint = rect.left + rect.width / 2;
+      
+      tabEl.classList.remove('drag-over-left', 'drag-over-right');
+      if (e.clientX < midpoint) {
+        tabEl.classList.add('drag-over-left');
+      } else {
+        tabEl.classList.add('drag-over-right');
+      }
+    });
+
+    // Drag leave - remove indicator
+    tabEl.addEventListener('dragleave', () => {
+      tabEl.classList.remove('drag-over-left', 'drag-over-right');
+    });
+
+    // Drop - reorder tabs
+    tabEl.addEventListener('drop', (e) => {
+      e.preventDefault();
+      
+      const targetTabId = tabEl.dataset.tabId;
+      
+      // Don't do anything if dropping on itself
+      if (targetTabId === draggedTabId || !draggedTabId) {
+        tabEl.classList.remove('drag-over-left', 'drag-over-right');
+        return;
+      }
+
+      // Determine drop position (before or after target)
+      const rect = tabEl.getBoundingClientRect();
+      const midpoint = rect.left + rect.width / 2;
+      const dropAfter = e.clientX >= midpoint;
+
+      // Calculate new tab order
+      const newTabOrder = reorderTabsArray(draggedTabId, targetTabId, dropAfter);
+      
+      // Call API to reorder tabs
+      if (newTabOrder) {
+        window.tabBarAPI.reorderTabs(windowId, newTabOrder);
+      }
+
+      // Clean up
+      tabEl.classList.remove('drag-over-left', 'drag-over-right');
     });
   });
 
@@ -199,6 +275,40 @@ function addEventListeners() {
 function truncateTitle(title, maxLength) {
   if (title.length <= maxLength) return title;
   return title.substring(0, maxLength - 3) + '...';
+}
+
+// Calculate new tab order after drag and drop
+function reorderTabsArray(draggedId, targetId, dropAfter) {
+  // Get current tab IDs in order
+  const tabIds = tabs.map(tab => tab.tabId);
+  
+  const draggedIndex = tabIds.indexOf(draggedId);
+  const targetIndex = tabIds.indexOf(targetId);
+  
+  if (draggedIndex === -1 || targetIndex === -1) {
+    return null;
+  }
+  
+  // Remove the dragged tab from its current position
+  const newOrder = [...tabIds];
+  newOrder.splice(draggedIndex, 1);
+  
+  // Calculate the new insert position
+  // Need to adjust target index if dragged tab was before target
+  let insertIndex = tabIds.indexOf(targetId);
+  if (draggedIndex < insertIndex) {
+    insertIndex--; // Adjust because we removed an item before it
+  }
+  
+  // Insert after target if dropAfter is true
+  if (dropAfter) {
+    insertIndex++;
+  }
+  
+  // Insert the dragged tab at its new position
+  newOrder.splice(insertIndex, 0, draggedId);
+  
+  return newOrder;
 }
 
 // Detect and apply theme
