@@ -445,6 +445,14 @@ function createNativeMenuWithNavigation() {
     {
       label: 'Window',
       submenu: [
+        {
+          label: 'New Window',
+          accelerator: 'CmdOrCtrl+N',
+          click: () => {
+            appController.createNewWindow();
+          }
+        },
+        { type: 'separator' },
         { role: 'minimize' },
         {
           label: 'Close Window',
