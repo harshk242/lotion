@@ -10,17 +10,23 @@ const {
   updateTabUnusedSince,
 } = require('../store/slices/tabsSlice');
 const config = require('../../../config/config.json');
+const { getPreferences } = require('../preferences');
 
 /**
  * TabController manages a single tab instance
  * Each tab has its own WebContentsView that loads Notion
  */
 class TabController {
-  constructor({ tabId, windowId, store, initialUrl }) {
+  constructor({ tabId, windowId, store, initialUrl, deferLoad = false }) {
     this.tabId = tabId;
     this.windowId = windowId;
     this.store = store;
     this.initialUrl = initialUrl || config.domainBaseUrl;
+    // When deferLoad is set (background tabs restored from a session) the
+    // view is created but the URL is only loaded on first show, or when
+    // WindowController preloads it after the visible tab has loaded.
+    this.deferLoad = deferLoad;
+    this.pendingUrl = null;
     this.webContentsView = null;
     this.isVisible = false;
     this.isDestroyed = false;
@@ -40,7 +46,29 @@ class TabController {
     log.info(`Initializing tab: ${this.tabId}`);
     this.createWebContentsView();
     this.setupEventListeners();
-    this.loadURL(this.initialUrl);
+    if (this.deferLoad) {
+      this.pendingUrl = this.initialUrl;
+      log.info(`Tab ${this.tabId}: Deferring load of ${this.initialUrl}`);
+    } else {
+      this.loadURL(this.initialUrl);
+    }
+  }
+
+  /**
+   * Whether this tab was created with deferLoad and hasn't loaded yet.
+   */
+  hasPendingLoad() {
+    return !!this.pendingUrl && !this.isDestroyed;
+  }
+
+  /**
+   * Start loading a deferred tab. No-op if it's already loaded.
+   */
+  ensureLoaded() {
+    if (!this.hasPendingLoad()) return;
+    const url = this.pendingUrl;
+    this.pendingUrl = null;
+    this.loadURL(url);
   }
 
   /**
@@ -69,8 +97,7 @@ class TabController {
       log.debug(`Tab ${this.tabId}: Spell checker languages set to ${dictionaries}`);
 
       // Check if spell check is enabled in settings
-      const Store = require('electron-store');
-      const store = new Store();
+      const store = getPreferences();
       const spellCheckEnabled = store.get('spellCheckEnabled', true);
       this.webContentsView.webContents.session.setSpellCheckerEnabled(spellCheckEnabled);
       log.debug(`Tab ${this.tabId}: Spell checker enabled: ${spellCheckEnabled}`);
@@ -410,8 +437,7 @@ class TabController {
 
     const { app } = require('electron');
     const fs = require('fs');
-    const Store = require('electron-store');
-    const store = new Store();
+    const store = getPreferences();
 
     // First, inject theme if one is selected
     const currentTheme = store.get('theme', 'default');
@@ -679,6 +705,8 @@ class TabController {
       return;
     }
 
+    // An explicit navigation supersedes any deferred initial load.
+    this.pendingUrl = null;
     log.info(`Tab ${this.tabId}: Loading URL ${url}`);
     this.webContentsView.webContents.loadURL(url);
 
@@ -702,6 +730,9 @@ class TabController {
 
     this.isVisible = true;
     log.debug(`Tab ${this.tabId}: Now visible`);
+
+    // A deferred tab loads as soon as the user looks at it.
+    this.ensureLoaded();
 
     // Mark as recently used
     this.store.dispatch(
@@ -738,6 +769,11 @@ class TabController {
   reload() {
     if (this.isDestroyed || !this.webContentsView) {
       log.warn(`Cannot reload destroyed tab: ${this.tabId}`);
+      return;
+    }
+
+    if (this.hasPendingLoad()) {
+      this.ensureLoaded();
       return;
     }
 

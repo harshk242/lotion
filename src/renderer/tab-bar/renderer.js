@@ -7,11 +7,25 @@ let windowId = null;
 
 // Initialize on DOM load
 document.addEventListener('DOMContentLoaded', async () => {
-  await loadInitialState();
+  // Register listeners before requesting the initial state so an update
+  // sent while the request is in flight is not dropped.
   setupEventListeners();
+  await loadInitialState();
   await loadInitialTheme();
   render();
 });
+
+// The main process usually sends tabs-updated and tab-activated back to
+// back; coalesce them into a single re-render per animation frame.
+let renderScheduled = false;
+function scheduleRender() {
+  if (renderScheduled) return;
+  renderScheduled = true;
+  requestAnimationFrame(() => {
+    renderScheduled = false;
+    render();
+  });
+}
 
 // Load initial state from main process
 async function loadInitialState() {
@@ -31,12 +45,12 @@ function setupEventListeners() {
   // Listen for tab updates from main process
   window.tabBarAPI.onTabsUpdated((data) => {
     tabs = data.tabs;
-    render();
+    scheduleRender();
   });
 
   window.tabBarAPI.onTabActivated((tabId) => {
     activeTabId = tabId;
-    render();
+    scheduleRender();
   });
 
   // Listen for theme changes

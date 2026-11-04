@@ -6,10 +6,11 @@ const path = require('path');
 function sessionHarness(values = {}) {
   const data = structuredClone(values);
   const state = { windows: { windows: {} }, tabs: { tabs: {} } };
+  const writes = [];
   const Store = class {
     get(key, fallback) { return key in data ? data[key] : fallback; }
     has(key) { return key in data; }
-    set(key, value) { data[key] = value; }
+    set(key, value) { writes.push(key); data[key] = value; }
   };
   const logger = new Proxy({}, { get: () => () => {} });
   const sandbox = {
@@ -19,6 +20,7 @@ function sessionHarness(values = {}) {
       if (name === 'electron-store') return Store;
       if (name === 'electron-log') return { scope: () => logger };
       if (name === '../store/slices/tabsSlice') return require('../src/main/store/slices/tabsSlice');
+      if (name === '../store/slices/windowsSlice') return require('../src/main/store/slices/windowsSlice');
       if (name === 'uuid') return { v4: () => 'window' };
       return {};
     },
@@ -29,15 +31,21 @@ function sessionHarness(values = {}) {
     dispatch: (action) => {
       const { tabsReducer } = require('../src/main/store/slices/tabsSlice');
       state.tabs = tabsReducer(state.tabs, action);
+      if (action.type === 'windows/reorderTabsInWindow') {
+        state.windows.windows[action.payload.windowId].tabIds = action.payload.tabIds;
+      }
     },
   });
-  return { controller, data, state };
+  return { controller, data, state, writes };
 }
 
 test('migrates saved fork tabs and retains automatic restoration', () => {
   const { controller, data } = sessionHarness({ savedTabs: [{ url: 'https://www.notion.so/page' }] });
   const created = [];
-  controller.createNewWindow = (options) => { created.push(options); return {}; };
+  controller.createNewWindow = (options) => {
+    created.push(options);
+    return { windowId: 'w', getActiveTabController: () => ({ tabId: 't' }) };
+  };
   expect(controller.tryRestoreSession()).toBe(true);
   expect(data.restoreTabsOnStartup).toBe(true);
   expect(data.sessionTabs.windows[0].tabs[0].url).toBe('https://www.notion.so/page');
@@ -105,35 +113,78 @@ test('tab reordering supports both directions and rejects invalid drops', () => 
 });
 
 
-test('restores pinned first tabs, additional tabs and the selected tab in each window', () => {
+test('restores tab order, pinned state and selection, loading only the selected tab up front', () => {
+  const one = 'https://www.notion.so/one';
+  const two = 'https://www.notion.so/two';
+  const three = 'https://www.notion.so/three';
+  const four = 'https://www.notion.so/four';
   const { controller, state } = sessionHarness({
     restoreTabsOnStartup: true,
     sessionTabs: { windows: [
-      { tabs: [{ url: 'https://www.notion.so/one', isPinned: true }, { url: 'https://www.notion.so/two' }], activeTabIndex: 1 },
-      { tabs: [{ url: 'https://www.notion.so/three' }], activeTabIndex: 0 },
+      { tabs: [{ url: one, isPinned: true, title: 'One' }, { url: two }, { url: three, title: 'Three' }], activeTabIndex: 1 },
+      { tabs: [{ url: four }], activeTabIndex: 0 },
     ] },
   });
   const { createTab } = require('../src/main/store/slices/tabsSlice');
   let nextTab = 0;
+  const createdTabs = [];
   controller.tabManager = { createTab(options) {
     const tabId = `tab-${++nextTab}`;
-    controller.store.dispatch(createTab({ tabId, ...options }));
+    createdTabs.push({ tabId, ...options });
+    controller.store.dispatch(createTab({ tabId, parentWindowId: options.windowId, ...options }));
     state.windows.windows[options.windowId].tabIds.push(tabId);
     return { tabId };
   } };
-  const selections = [];
+  const backgroundLoads = [];
   controller.createNewWindow = ({ initialUrl }) => {
     const windowId = `window-${controller.windowControllers.size}`;
     state.windows.windows[windowId] = { tabIds: [] };
     const first = controller.tabManager.createTab({ windowId, url: initialUrl });
-    const window = { windowId, getActiveTabController: () => first, switchToTab: (tabId) => selections.push(tabId) };
+    const window = {
+      windowId,
+      getActiveTabController: () => first,
+      loadDeferredTabsInBackground: () => backgroundLoads.push(windowId),
+    };
     controller.windowControllers.set(windowId, window);
     return window;
   };
+
   expect(controller.tryRestoreSession()).toBe(true);
   expect(controller.windowControllers.size).toBe(2);
-  expect(state.tabs.tabs['tab-1'].isPinned).toBe(true);
-  expect(state.tabs.tabs['tab-2'].url).toBe('https://www.notion.so/two');
-  expect(state.tabs.tabs['tab-3'].url).toBe('https://www.notion.so/three');
-  expect(selections).toEqual(['tab-2']);
+
+  // Saved order is preserved even though the selected tab is created first.
+  const urlsIn = (windowId) => state.windows.windows[windowId].tabIds.map((id) => state.tabs.tabs[id].url);
+  expect(urlsIn('window-0')).toEqual([one, two, three]);
+  expect(urlsIn('window-1')).toEqual([four]);
+
+  // The selected tab is the window's initial (immediately loaded) tab.
+  const byUrl = (url) => createdTabs.find((t) => t.url === url);
+  expect(byUrl(two).deferLoad).toBeUndefined();
+  expect(byUrl(four).deferLoad).toBeUndefined();
+
+  // Other tabs are created in the background with deferred loading,
+  // keeping their pinned state and saved title.
+  expect(byUrl(one)).toMatchObject({ deferLoad: true, makeActive: false, isPinned: true, title: 'One' });
+  expect(byUrl(three)).toMatchObject({ deferLoad: true, makeActive: false, isPinned: false, title: 'Three' });
+  expect(state.tabs.tabs[byUrl(one).tabId].isPinned).toBe(true);
+
+  expect(backgroundLoads).toEqual(['window-0', 'window-1']);
+});
+
+test('saves tab titles and skips rewriting an unchanged session', () => {
+  const { controller, data, state, writes } = sessionHarness({ restoreTabsOnStartup: true });
+  controller.windowControllers.set('one', { windowId: 'one' });
+  state.windows.windows = { one: { tabIds: ['a'], activeTabId: 'a' } };
+  state.tabs.tabs = { a: { url: 'https://www.notion.so/a', title: 'Page A' } };
+
+  controller.saveTabState();
+  expect(data.sessionTabs.windows[0].tabs).toEqual([{ url: 'https://www.notion.so/a', isPinned: false, title: 'Page A' }]);
+  controller.saveTabState();
+  controller.saveTabState();
+  expect(writes.filter((k) => k === 'sessionTabs').length).toBe(1);
+
+  state.tabs.tabs = { a: { url: 'https://www.notion.so/a', title: 'Renamed' } };
+  controller.saveTabState();
+  expect(writes.filter((k) => k === 'sessionTabs').length).toBe(2);
+  expect(data.sessionTabs.windows[0].tabs[0].title).toBe('Renamed');
 });

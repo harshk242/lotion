@@ -1,7 +1,7 @@
 const { BrowserWindow, WebContentsView } = require('electron');
 const path = require('path');
 const log = require('electron-log').scope('WindowController');
-const Store = require('electron-store');
+const { getPreferences } = require('../preferences');
 const { addWindow, removeWindow, setWindowFocus, updateWindowBounds, updateWindowTitle } = require('../store/slices/windowsSlice');
 const config = require('../../../config/config.json'); // Adjust path as needed
 
@@ -19,7 +19,7 @@ class WindowController {
     // Native-frame mode is opt-in. When enabled the window uses the
     // DE's window decorations and the standard Electron menu bar, and
     // the custom tab bar is not created (single-window-per-tab UX).
-    const localStore = new Store();
+    const localStore = getPreferences();
     this.useNativeFrame = !!localStore.get('useNativeWindowFrame', false);
 
     // Tab bar height in pixels (0 when there's no tab bar to draw).
@@ -104,8 +104,7 @@ class WindowController {
     log.info(`BrowserWindow created for ${this.windowId}`);
 
     // Always use the persisted value from electron-store for spell checker languages
-    const Store = require('electron-store');
-    const localStore = new Store();
+    const localStore = getPreferences();
     let dictionaries = localStore.get('spellCheckDictionaries', ['en-US']);
     if (!dictionaries || !Array.isArray(dictionaries) || dictionaries.length === 0) {
       dictionaries = ['en-US'];
@@ -272,11 +271,16 @@ class WindowController {
       log.debug(`Set tab content bounds:`, { x: 0, y: this.TAB_BAR_HEIGHT, width, height: height - this.TAB_BAR_HEIGHT });
     }
 
-    // Ensure tab bar stays on top by removing and re-adding it
-    // This forces it to be the topmost view
-    if (this.browserWindow.contentView) {
-      this.browserWindow.contentView.removeChildView(this.tabBarView);
-      this.browserWindow.contentView.addChildView(this.tabBarView);
+    // Ensure tab bar stays on top by removing and re-adding it.
+    // This runs on every resize event, so only restack when another view
+    // (e.g. a newly activated tab) has actually been added above it.
+    const contentView = this.browserWindow.contentView;
+    if (contentView) {
+      const children = contentView.children;
+      if (!children || children[children.length - 1] !== this.tabBarView) {
+        contentView.removeChildView(this.tabBarView);
+        contentView.addChildView(this.tabBarView);
+      }
     }
   }
 
@@ -331,6 +335,61 @@ class WindowController {
       this.updateViewBounds(); // Position it correctly
       tabController.show();
     }
+  }
+
+  /**
+   * Load this window's deferred tabs (created with deferLoad during
+   * session restore) one at a time in the background.
+   *
+   * Booting several Notion instances at once makes them compete for CPU
+   * with the tab the user is actually looking at — on a 2-core machine
+   * that noticeably delays the first usable page. Instead, wait until the
+   * active tab has finished loading, then warm up the remaining tabs
+   * sequentially. A deferred tab the user switches to earlier loads
+   * immediately (TabController#show).
+   */
+  loadDeferredTabsInBackground() {
+    if (this.deferredLoadRunning) return;
+    this.deferredLoadRunning = true;
+
+    const AFTER_ACTIVE_TAB_MS = 2000; // let the visible tab finish booting
+    const BETWEEN_TABS_MS = 1000;
+    const MAX_WAIT_MS = 20000; // don't stall the queue on a page that never stops loading
+
+    const whenSettled = (tabController, delayMs, callback) => {
+      const webContents = tabController?.webContentsView?.webContents;
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(fallback);
+        setTimeout(callback, delayMs);
+      };
+      const fallback = setTimeout(finish, MAX_WAIT_MS);
+      if (!webContents || webContents.isDestroyed() || !webContents.isLoading()) {
+        finish();
+        return;
+      }
+      webContents.once('did-stop-loading', finish);
+    };
+
+    const TabManager = require('../managers/TabManager');
+    const tabManager = TabManager.getInstance();
+
+    const loadNext = () => {
+      const next = this.browserWindow
+        ? tabManager.getTabsForWindow(this.windowId).find((tab) => tab.hasPendingLoad())
+        : null;
+      if (!next) {
+        this.deferredLoadRunning = false;
+        return;
+      }
+      log.info(`Window ${this.windowId}: loading background tab ${next.tabId}`);
+      next.ensureLoaded();
+      whenSettled(next, BETWEEN_TABS_MS, loadNext);
+    };
+
+    whenSettled(this.currentActiveTabController, AFTER_ACTIVE_TAB_MS, loadNext);
   }
 
   // --- Public Methods --- //

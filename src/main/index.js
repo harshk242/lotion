@@ -3,12 +3,17 @@
 
 const { app, Menu, shell, dialog, ipcMain } = require('electron');
 const path = require('path');
-const { autoUpdater } = require('electron-updater');
 const log = require('electron-log');
-const Store = require('electron-store');
-const reduxStore = require('./store/store');
-const AppController = require('./controllers/AppController');
-const { getSpellCheckMenu } = require('./spellCheckMenu');
+
+// Debug-level logging (window move/resize, every navigation, view bounds)
+// is written synchronously to main.log and the console on the main
+// thread. Keep it for development; packaged builds log info and above.
+// Override with LOTION_LOG_LEVEL=debug when diagnosing an installed build.
+{
+  const logLevel = process.env.LOTION_LOG_LEVEL || (app.isPackaged ? 'info' : 'silly');
+  log.transports.file.level = logLevel;
+  log.transports.console.level = logLevel;
+}
 
 // Set custom user data path for development to avoid conflicts
 if (process.env.NODE_ENV === 'development') {
@@ -33,18 +38,16 @@ if (!gotTheLock) {
   log.info('Single instance lock acquired successfully');
 }
 
-// Import config (needed after lock is acquired)
+// Load the rest of the app only once we know this process will keep
+// running — a second `lotion` launch exits above without paying for it.
+const { getPreferences } = require('./preferences');
+const reduxStore = require('./store/store');
+const AppController = require('./controllers/AppController');
+const { getSpellCheckMenu } = require('./spellCheckMenu');
 const config = require('../../config/config.json');
 
-// Initialize store for user preferences (localStore for menu bar visibility etc.)
-const localStore = new Store({
-  defaults: {
-    menuBarVisible: true,
-    autoHideMenuBar: false,
-    restoreTabsOnStartup: false,
-    useNativeWindowFrame: false
-  }
-});
+// Shared store for user preferences (menu bar visibility, theme, etc.)
+const localStore = getPreferences();
 
 // --- Initialize spell check dictionaries in Redux from electron-store before anything else ---
 const spellCheckDictionaries = localStore.get('spellCheckDictionaries', ['en-US']);
@@ -57,7 +60,7 @@ reduxStore.dispatch({ type: 'app/setDictionaries', payload: spellCheckDictionari
 // array in show-logo-menu; light-mode themes set 'light', dark-mode
 // themes set 'dark', and Default leaves it as 'system'.
 {
-  const savedTheme = (new Store()).get('theme', 'default');
+  const savedTheme = localStore.get('theme', 'default');
   const lightThemes = new Set(['catppuccin-latte', 'sakura']);
   const isExplicitlyLight = lightThemes.has(savedTheme);
   const isExplicitlyDark = savedTheme !== 'default' && !isExplicitlyLight;
@@ -99,6 +102,7 @@ appController.init(); // Initialize AppController event handlers
 // and tell the user to relaunch.
 function toggleNativeWindowFrame(newValue) {
   localStore.set('useNativeWindowFrame', newValue);
+  createNativeMenuWithNavigation(); // Keep the app menu checkbox in sync with the logo menu
   const focusedWindow = appController.getFocusedWindowController()?.getInternalBrowserWindow();
   if (!focusedWindow) return;
   dialog.showMessageBox(focusedWindow, {
@@ -579,35 +583,6 @@ app.on('certificate-error', (event, webContents, url, error, certificate, callba
   }
 });
 
-// Auto updater events (for future use)
-autoUpdater.on('checking-for-update', () => {
-  log.info('Checking for update...');
-});
-
-autoUpdater.on('update-available', (info) => {
-  log.info('Update available.');
-});
-
-autoUpdater.on('update-not-available', (info) => {
-  log.info('Update not available.');
-});
-
-autoUpdater.on('error', (err) => {
-  log.error('Error in auto-updater. ' + err);
-});
-
-autoUpdater.on('download-progress', (progressObj) => {
-  let log_message = "Download speed: " + progressObj.bytesPerSecond;
-  log_message = log_message + ' - Downloaded ' + progressObj.percent + '%';
-  log_message = log_message + ' (' + progressObj.transferred + "/" + progressObj.total + ')';
-  log.info(log_message);
-});
-
-autoUpdater.on('update-downloaded', (info) => {
-  log.info('Update downloaded');
-  autoUpdater.quitAndInstall();
-});
-
 // IPC handlers for communication with renderer process
 ipcMain.handle('get-config', () => {
   return config;
@@ -701,8 +676,7 @@ ipcMain.handle('open-in-new-tab', async (event, url) => {
 
 // Get current theme
 ipcMain.handle('get-current-theme', () => {
-  const store = new Store();
-  return store.get('theme', 'default');
+  return localStore.get('theme', 'default');
 });
 
 // Show logo menu as native popup
@@ -715,7 +689,7 @@ ipcMain.handle('show-logo-menu', async (event) => {
   }
 
   // Get current spell check setting
-  const store = new Store();
+  const store = localStore;
   const spellCheckEnabled = store.get('spellCheckEnabled', true); // Default to enabled
   const currentTheme = store.get('theme', 'default'); // Default to Notion's default theme
   const restoreTabsOnStartup = store.get('restoreTabsOnStartup', false);
@@ -952,6 +926,10 @@ ipcMain.handle('tab-bar:get-initial-state', (event) => {
     return { tabs: [], activeTabId: null, windowId: null };
   }
 
+  // The tab bar (re)loaded and starts from this snapshot; forget what was
+  // last pushed so the next change is always delivered.
+  lastTabBarSignature.delete(windowController.windowId);
+
   // Get tabs for this window from Redux state
   const state = reduxStore.getState();
   const windowState = state.windows.windows[windowController.windowId];
@@ -1144,28 +1122,59 @@ ipcMain.handle('tab-bar:unpin-tab', async (event, tabId) => {
   return { success: true };
 });
 
-// Helper function to notify tab bar of updates
+// Tab bar updates are coalesced: a single user action (new tab, close,
+// navigation) dispatches several Redux actions, and each used to trigger
+// its own IPC send + full tab bar re-render. Requests are batched into one
+// flush per event-loop turn, and a window is only re-sent when something
+// the tab bar actually renders has changed (order, title, favicon, pin
+// state, active tab) — not on url/isLoaded/unusedSince churn.
+const pendingTabBarWindowIds = new Set();
+const lastTabBarSignature = new Map(); // windowId -> signature last sent
+let tabBarFlushScheduled = false;
+
 function notifyTabBarUpdate(windowId) {
-  const windowController = appController.windowControllers.get(windowId);
-  if (!windowController || !windowController.tabBarView) return;
+  pendingTabBarWindowIds.add(windowId);
+  if (tabBarFlushScheduled) return;
+  tabBarFlushScheduled = true;
+  setImmediate(flushTabBarUpdates);
+}
 
+function flushTabBarUpdates() {
+  tabBarFlushScheduled = false;
+  const windowIds = [...pendingTabBarWindowIds];
+  pendingTabBarWindowIds.clear();
   const state = reduxStore.getState();
-  const windowState = state.windows.windows[windowId];
 
-  if (!windowState) return;
+  for (const windowId of windowIds) {
+    const windowController = appController.windowControllers.get(windowId);
+    const windowState = state.windows.windows[windowId];
+    if (!windowController || !windowState) {
+      lastTabBarSignature.delete(windowId);
+      continue;
+    }
+    const tabBarContents = windowController.tabBarView?.webContents;
+    if (!tabBarContents || tabBarContents.isDestroyed()) continue;
 
-  // Build tab list
-  const tabs = windowState.tabIds.map((tabId) => {
-    const tabState = state.tabs.tabs[tabId];
-    return tabState || { tabId };
-  });
+    // Build tab list
+    const tabs = windowState.tabIds.map((tabId) => {
+      const tabState = state.tabs.tabs[tabId];
+      return tabState || { tabId };
+    });
 
-  // Send update to tab bar
-  windowController.tabBarView.webContents.send('tab-bar:tabs-updated', { tabs });
+    const signature = JSON.stringify([
+      windowState.activeTabId,
+      tabs.map((t) => [t.tabId, t.title, t.favicon, !!t.isPinned]),
+    ]);
+    if (lastTabBarSignature.get(windowId) === signature) continue;
+    lastTabBarSignature.set(windowId, signature);
 
-  // Send active tab update
-  if (windowState.activeTabId) {
-    windowController.tabBarView.webContents.send('tab-bar:tab-activated', windowState.activeTabId);
+    // Send update to tab bar
+    tabBarContents.send('tab-bar:tabs-updated', { tabs });
+
+    // Send active tab update
+    if (windowState.activeTabId) {
+      tabBarContents.send('tab-bar:tab-activated', windowState.activeTabId);
+    }
   }
 }
 
@@ -1174,37 +1183,48 @@ app.commandLine.appendSwitch('disable-gpu-vsync');
 app.commandLine.appendSwitch('disable-gpu-sandbox');
 app.commandLine.appendSwitch('disable-software-rasterizer');
 
-// Subscribe to Redux state changes to update UI
-let previousTabsState = {};
-let previousActiveTabsState = {};
+// Subscribe to Redux state changes to update UI.
+//
+// This runs on every dispatch — including each window move/resize event
+// and every in-page navigation — so it must stay cheap. Redux Toolkit
+// state is immutable, so reference comparisons tell us exactly what
+// changed without serializing the state.
+let previousDictionaries = null;
+let previousFocusedWindowId;
+let previousTabsState = null;
+let previousWindowTabs = new Map(); // windowId -> [tabIds, activeTabId]
 reduxStore.subscribe(() => {
   const state = reduxStore.getState();
 
-  // Recreate menu when spell check dictionaries change
-  createNativeMenuWithNavigation();
-
-  // Notify tab bars when tab data changes (titles, favicons, etc.)
-  const currentTabsState = state.tabs.tabs;
-
-  // Notify tab bars when the active tab changes — the per-window activeTabId
-  // lives in state.windows, not state.tabs, so we need to watch it separately
-  // or tab clicks won't update the highlighted tab in the bar.
-  const currentActiveTabsState = {};
-  for (const [wid, w] of Object.entries(state.windows.windows || {})) {
-    currentActiveTabsState[wid] = w.activeTabId;
+  // Rebuilding the native menu is expensive (it re-registers every
+  // accelerator). Only do it when its inputs change: the spell check
+  // dictionaries and the focused window (menu click handlers and the
+  // menu bar labels are bound to the focused window).
+  if (state.app.dictionaries !== previousDictionaries ||
+      state.windows.focusedWindowId !== previousFocusedWindowId) {
+    previousDictionaries = state.app.dictionaries;
+    previousFocusedWindowId = state.windows.focusedWindowId;
+    createNativeMenuWithNavigation();
   }
 
-  const tabsChanged = JSON.stringify(currentTabsState) !== JSON.stringify(previousTabsState);
-  const activeChanged = JSON.stringify(currentActiveTabsState) !== JSON.stringify(previousActiveTabsState);
+  // Notify tab bars when tab data (titles, favicons, etc.), tab order or
+  // the active tab changes. The per-window activeTabId lives in
+  // state.windows, not state.tabs, so it is watched separately or tab
+  // clicks won't update the highlighted tab in the bar.
+  const tabsChanged = state.tabs.tabs !== previousTabsState;
+  previousTabsState = state.tabs.tabs;
 
-  if (tabsChanged || activeChanged) {
-    previousTabsState = { ...currentTabsState };
-    previousActiveTabsState = currentActiveTabsState;
-
-    for (const windowController of appController.windowControllers.values()) {
-      if (windowController.tabBarView && windowController.tabBarView.webContents) {
-        notifyTabBarUpdate(windowController.windowId);
-      }
+  const windows = state.windows.windows || {};
+  const currentWindowTabs = new Map();
+  for (const [wid, w] of Object.entries(windows)) {
+    const prev = previousWindowTabs.get(wid);
+    currentWindowTabs.set(wid, [w.tabIds, w.activeTabId]);
+    if (tabsChanged || !prev || prev[0] !== w.tabIds || prev[1] !== w.activeTabId) {
+      notifyTabBarUpdate(wid);
     }
   }
+  for (const wid of previousWindowTabs.keys()) {
+    if (!currentWindowTabs.has(wid)) lastTabBarSignature.delete(wid);
+  }
+  previousWindowTabs = currentWindowTabs;
 });

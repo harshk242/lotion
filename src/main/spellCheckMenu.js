@@ -1,8 +1,8 @@
 const log = require('electron-log').scope('SpellCheckMenu');
 const reduxStore = require('./store/store');
-const Store = require('electron-store');
+const { getPreferences } = require('./preferences');
 
-const localStore = new Store();
+const localStore = getPreferences();
 const DICTIONARIES = [
   { code: 'en-US', label: 'English (US)' },
   { code: 'en-GB', label: 'English (UK)' },
