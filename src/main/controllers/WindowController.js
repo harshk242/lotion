@@ -1,41 +1,51 @@
 const { BrowserWindow, WebContentsView } = require('electron');
 const path = require('path');
 const log = require('electron-log').scope('WindowController');
+const Store = require('electron-store');
 const { addWindow, removeWindow, setWindowFocus, updateWindowBounds, updateWindowTitle } = require('../store/slices/windowsSlice');
 const config = require('../../../config/config.json'); // Adjust path as needed
 
 class WindowController {
-  constructor({ windowId, store, initialUrl, initialTabs, title, bounds }) {
+  constructor({ windowId, store, initialUrl, title, bounds }) {
     this.windowId = windowId;
     this.store = store;
     this.browserWindow = null;
-    this.tabBarView = null; // WebContentsView for tab bar UI
+    this.tabBarView = null; // WebContentsView for tab bar UI (null in native-frame mode)
     this.currentActiveTabController = null; // Reference to active tab's controller
     this.initialUrl = initialUrl || config.domainBaseUrl;
-    this.initialTabs = initialTabs || null; // Array of {url, title} for restoring tabs
     this.initialTitle = title || 'Lotion';
     this.initialBounds = bounds || { width: 1200, height: 800 };
 
-    // Tab bar height in pixels (reduced for a sleeker look)
-    this.TAB_BAR_HEIGHT = 32;
+    // Native-frame mode is opt-in. When enabled the window uses the
+    // DE's window decorations and the standard Electron menu bar, and
+    // the custom tab bar is not created (single-window-per-tab UX).
+    const localStore = new Store();
+    this.useNativeFrame = !!localStore.get('useNativeWindowFrame', false);
 
-    log.info(`WindowController initialized for windowId: ${this.windowId}`);
+    // Tab bar height in pixels (0 when there's no tab bar to draw).
+    this.TAB_BAR_HEIGHT = this.useNativeFrame ? 0 : 32;
+
+    log.info(`WindowController initialized for windowId: ${this.windowId} (useNativeFrame=${this.useNativeFrame})`);
   }
 
   init() {
     log.info(`Initializing window: ${this.windowId}`);
     this.createBrowserWindow();
-    this.createTabBarView();
+    if (!this.useNativeFrame) {
+      this.createTabBarView();
+    }
     this.setupBrowserWindowListeners();
 
-    // IMPORTANT: Dispatch addWindow BEFORE createInitialTab so that
-    // addTabToWindow can find the window in Redux state
+    // Register the window in Redux BEFORE creating the initial tab.
+    // addTabToWindow and setActiveTabForWindow both silently no-op if the
+    // window entry doesn't exist yet, which meant the first tab never
+    // landed in tabIds and was missing from the tab bar.
     this.store.dispatch(addWindow({
       windowId: this.windowId,
-      bounds: this.browserWindow.getBounds(), // Get actual bounds after creation
+      bounds: this.browserWindow.getBounds(),
       url: this.initialUrl,
       title: this.initialTitle,
-      isFocused: this.browserWindow.isFocused(), // Check initial focus state
+      isFocused: this.browserWindow.isFocused(),
     }));
 
     this.createInitialTab();
@@ -63,8 +73,11 @@ class WindowController {
       minWidth: 600,
       minHeight: 400,
       icon: getIconPath(),
-      frame: false, // Remove window decorations for custom title bar
-      titleBarStyle: 'hidden', // Hide title bar on macOS
+      // Frameless mode pairs with the custom tab bar / title bar combo.
+      // In native mode the DE supplies decorations and we expose the
+      // standard Electron menu bar instead of the logo popup menu.
+      frame: this.useNativeFrame,
+      titleBarStyle: this.useNativeFrame ? 'default' : 'hidden',
       transparent: false, // Don't use transparency (causes resize issues on Linux)
       backgroundColor: '#f5f5f5', // Match light theme background
       webPreferences: {
@@ -80,6 +93,14 @@ class WindowController {
       show: false, // Start hidden, show when ready
       title: this.initialTitle, // Set initial title
     });
+
+    // The native menu bar is hidden by default (the logo popup handles
+    // settings in custom mode). In native mode we surface it so users
+    // have a way to access settings/navigation without the tab bar.
+    if (this.useNativeFrame) {
+      this.browserWindow.setMenuBarVisibility(true);
+      this.browserWindow.setAutoHideMenuBar(false);
+    }
     log.info(`BrowserWindow created for ${this.windowId}`);
 
     // Always use the persisted value from electron-store for spell checker languages
@@ -107,7 +128,7 @@ class WindowController {
     this.browserWindow.on('close', (event) => {
       // Save tab state BEFORE window closes (while tabs are still in Redux)
       const appCtrl = require('./AppController').getInstance();
-      if (appCtrl) {
+      if (appCtrl && !appCtrl.isQuitting) {
         appCtrl.saveTabState();
       }
     });
@@ -141,6 +162,18 @@ class WindowController {
         // Update tab bar and content area layout
         this.updateViewBounds();
       }
+    });
+
+    // After the window is actually shown the WM may report different
+    // dimensions than at create time (especially on Linux with DE
+    // decorations enabled). Re-run bounds once to ensure the content
+    // view fills the window correctly on first paint.
+    this.browserWindow.once('show', () => {
+      this.updateViewBounds();
+      // Linux WMs sometimes report stale content bounds for a frame
+      // or two after show — recompute again shortly after to catch
+      // the final geometry without spamming the layout on every paint.
+      setTimeout(() => this.updateViewBounds(), 100);
     });
 
     this.browserWindow.on('move', () => {
@@ -197,7 +230,16 @@ class WindowController {
    * Update tab bar and content area bounds based on window size
    */
   updateViewBounds() {
-    if (!this.browserWindow || !this.tabBarView) return;
+    if (!this.browserWindow) return;
+    // In native-frame mode there's no tab bar to lay out; just size
+    // the active tab to fill the content area.
+    if (!this.tabBarView && this.useNativeFrame) {
+      const { width, height } = this.browserWindow.getContentBounds();
+      const tab = this.currentActiveTabController?.webContentsView;
+      if (tab) tab.setBounds({ x: 0, y: 0, width, height });
+      return;
+    }
+    if (!this.tabBarView) return;
 
     // For frameless windows (frame: false), getBounds() returns the correct size
     // getContentBounds() can return cached/stale values during maximize transitions
@@ -239,46 +281,21 @@ class WindowController {
   }
 
   /**
-   * Create initial tab(s) when window opens
-   * If initialTabs array is provided, restore those tabs; otherwise create single default tab
+   * Create initial tab when window opens
    */
   createInitialTab() {
     const TabManager = require('../managers/TabManager');
     const tabManager = TabManager.getInstance();
 
-    // If we have saved tabs to restore, create them all
-    if (this.initialTabs && Array.isArray(this.initialTabs) && this.initialTabs.length > 0) {
-      log.info(`Restoring ${this.initialTabs.length} tabs for window ${this.windowId}`);
-      
-      let firstTabController = null;
-      this.initialTabs.forEach((tabData, index) => {
-        const tabController = tabManager.createTab({
-          windowId: this.windowId,
-          url: tabData.url || config.domainBaseUrl,
-          title: tabData.title || 'New Tab',
-          makeActive: index === 0, // Only first tab is active initially
-        });
-        
-        if (index === 0) {
-          firstTabController = tabController;
-        }
-      });
+    log.info(`Creating initial tab for window ${this.windowId}`);
+    const tabController = tabManager.createTab({
+      windowId: this.windowId,
+      url: this.initialUrl,
+      title: this.initialTitle,
+      makeActive: true,
+    });
 
-      if (firstTabController) {
-        this.setActiveTab(firstTabController);
-      }
-    } else {
-      // Default: create single tab
-      log.info(`Creating initial tab for window ${this.windowId}`);
-      const tabController = tabManager.createTab({
-        windowId: this.windowId,
-        url: this.initialUrl,
-        title: this.initialTitle,
-        makeActive: true,
-      });
-
-      this.setActiveTab(tabController);
-    }
+    this.setActiveTab(tabController);
   }
 
   /**
