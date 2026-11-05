@@ -3,7 +3,7 @@
 
 const { app, Menu, shell, dialog, ipcMain } = require('electron');
 const path = require('path');
-const log = require('electron-log');
+const log = require('electron-log/main');
 
 // Debug-level logging (window move/resize, every navigation, view bounds)
 // is written synchronously to main.log and the console on the main

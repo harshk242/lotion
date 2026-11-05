@@ -1,4 +1,4 @@
-const log = require('electron-log').scope('SpellCheckMenu');
+const log = require('electron-log/main').scope('SpellCheckMenu');
 const reduxStore = require('./store/store');
 const { getPreferences } = require('./preferences');
 

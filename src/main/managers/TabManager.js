@@ -1,5 +1,5 @@
-const log = require('electron-log').scope('TabManager');
-const { v4: uuidv4 } = require('uuid');
+const log = require('electron-log/main').scope('TabManager');
+const { randomUUID } = require('crypto');
 const TabController = require('../controllers/TabController');
 const {
   createTab,
@@ -58,7 +58,7 @@ class TabManager {
    */
   createTab({
     windowId,
-    tabId = uuidv4(),
+    tabId = randomUUID(),
     url,
     title = 'New Tab',
     makeActive = true,

@@ -1,6 +1,6 @@
 const { WebContentsView } = require('electron');
 const path = require('path');
-const log = require('electron-log').scope('TabController');
+const log = require('electron-log/main').scope('TabController');
 const {
   updateTabTitle,
   updateTabUrl,

@@ -16,10 +16,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # electron-forge runs under node; Node 26 silently aborts packaging
+      # electron-forge runs under node. Node 26 needs the yauzl override in
+      # package.json, otherwise packaging silently aborts while unzipping Electron.
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 26
 
       - uses: oven-sh/setup-bun@v2
 

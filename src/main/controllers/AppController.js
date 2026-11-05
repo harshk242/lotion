@@ -1,10 +1,10 @@
 const { app, BrowserWindow } = require('electron');
-const log = require('electron-log').scope('AppController');
+const log = require('electron-log/main').scope('AppController');
 const Store = require('electron-store');
 const { addWindow } = require('../store/slices/windowsSlice'); // Import addWindow
 const WindowController = require('./WindowController'); // Import WindowController
 const TabManager = require('../managers/TabManager'); // Import TabManager
-const { v4: uuidv4 } = require('uuid'); // For generating unique window IDs
+const { randomUUID } = require('crypto');
 
 const SESSION_KEY = 'sessionTabs';
 
@@ -257,7 +257,7 @@ class AppController {
   }
 
   createNewWindow(options = {}) {
-    const windowId = options.windowId || uuidv4();
+    const windowId = options.windowId || randomUUID();
     log.info(`AppController: creating new window with id: ${windowId}`, options);
 
     if (this.windowControllers.has(windowId)) {

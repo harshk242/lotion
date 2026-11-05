@@ -1,6 +1,6 @@
 const { BrowserWindow, WebContentsView } = require('electron');
 const path = require('path');
-const log = require('electron-log').scope('WindowController');
+const log = require('electron-log/main').scope('WindowController');
 const { getPreferences } = require('../preferences');
 const { addWindow, removeWindow, setWindowFocus, updateWindowBounds, updateWindowTitle } = require('../store/slices/windowsSlice');
 const config = require('../../../config/config.json'); // Adjust path as needed

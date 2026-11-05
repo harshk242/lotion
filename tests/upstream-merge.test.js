@@ -18,10 +18,10 @@ function sessionHarness(values = {}) {
     require: (name) => {
       if (name === 'electron') return { app: {} };
       if (name === 'electron-store') return Store;
-      if (name === 'electron-log') return { scope: () => logger };
+      if (name === 'electron-log/main') return { scope: () => logger };
       if (name === '../store/slices/tabsSlice') return require('../src/main/store/slices/tabsSlice');
       if (name === '../store/slices/windowsSlice') return require('../src/main/store/slices/windowsSlice');
-      if (name === 'uuid') return { v4: () => 'window' };
+      if (name === 'crypto') return { randomUUID: () => 'window' };
       return {};
     },
   };

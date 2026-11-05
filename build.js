@@ -6,7 +6,7 @@ const path = require('path');
 console.log('🚀 Building Lotion for Linux...');
 
 // Run electron-forge make
-const forgeProcess = spawn('npm', ['run', 'make:linux'], {
+const forgeProcess = spawn('bun', ['run', 'make:linux'], {
   stdio: 'inherit',
   cwd: process.cwd()
 });
