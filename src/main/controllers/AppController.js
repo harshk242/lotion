@@ -17,6 +17,8 @@ class AppController {
     this.windowControllers = new Map(); // Map of windowId to WindowController instance
     this.tabManager = null; // TabManager singleton instance
     this.isQuitting = false;
+    this.prefs = null; // electron-store instance, created on first use
+    this.lastSavedSessionJSON = null; // last session snapshot written to disk
     // this.createWindowCallback = null; // No longer needed from index.js
 
     if (!instance) {
@@ -28,6 +30,11 @@ class AppController {
 
   static getInstance() {
     return instance;
+  }
+
+  getPrefs() {
+    if (!this.prefs) this.prefs = new Store();
+    return this.prefs;
   }
 
   init(/*{ createWindowCallback }*/) { // createWindowCallback no longer needed
@@ -117,10 +124,17 @@ class AppController {
       const w = windowsState[windowController.windowId];
       if (!w || !w.tabIds || w.tabIds.length === 0) continue;
 
+      // Title and favicon let restored background tabs show their real
+      // label in the tab bar before they are loaded.
       const tabs = w.tabIds
         .map((tabId) => tabsState[tabId])
         .filter((t) => t && t.url)
-        .map((t) => ({ url: t.url, isPinned: !!t.isPinned }));
+        .map((t) => {
+          const tab = { url: t.url, isPinned: !!t.isPinned };
+          if (t.title) tab.title = t.title;
+          if (t.favicon && t.favicon.length <= 4096) tab.favicon = t.favicon;
+          return tab;
+        });
 
       if (tabs.length === 0) continue;
 
@@ -160,11 +174,13 @@ class AppController {
    * its default first-window creation).
    */
   tryRestoreSession() {
-    const store = new Store();
+    const store = this.getPrefs();
     const legacyTabs = store.get('savedTabs', []);
     if (!store.has(SESSION_KEY) && Array.isArray(legacyTabs) && legacyTabs.length > 0) {
       const tabs = legacyTabs.filter((tab) => tab && tab.url)
-        .map((tab) => ({ url: tab.url, isPinned: !!tab.isPinned }));
+        .map((tab) => (tab.title
+          ? { url: tab.url, isPinned: !!tab.isPinned, title: tab.title }
+          : { url: tab.url, isPinned: !!tab.isPinned }));
       if (tabs.length > 0) {
         store.set(SESSION_KEY, {
           savedAt: new Date().toISOString(),
@@ -185,43 +201,53 @@ class AppController {
     log.info(`Restoring session: ${saved.windows.length} window(s) saved at ${saved.savedAt}`);
     let restoredAny = false;
 
+    const { setTabPinned } = require('../store/slices/tabsSlice');
+    const { reorderTabsInWindow } = require('../store/slices/windowsSlice');
+
     for (const w of saved.windows) {
       if (!w.tabs || w.tabs.length === 0) continue;
 
-      // First tab becomes the window's initial tab via createNewWindow.
-      const firstTab = w.tabs[0];
-      const windowController = this.createNewWindow({ initialUrl: firstTab.url });
+      // Only the tab the user will see is loaded right away. It becomes
+      // the window's initial tab; the others are created deferred (with
+      // their saved title/favicon) and loaded one at a time in the
+      // background once it has finished loading — see
+      // WindowController#loadDeferredTabsInBackground.
+      const activeIdx = Math.min(Math.max(w.activeTabIndex || 0, 0), w.tabs.length - 1);
+      const activeTab = w.tabs[activeIdx];
+      const windowController = this.createNewWindow({ initialUrl: activeTab.url });
+      const activeTabController = windowController.getActiveTabController();
 
-      // The first tab was just created; pin it after creation if needed.
-      if (firstTab.isPinned) {
-        const firstTabController = windowController.getActiveTabController();
-        if (firstTabController) {
-          const { setTabPinned } = require('../store/slices/tabsSlice');
-          this.store.dispatch(setTabPinned({ tabId: firstTabController.tabId, isPinned: true }));
-        }
+      if (activeTab.isPinned && activeTabController) {
+        this.store.dispatch(setTabPinned({ tabId: activeTabController.tabId, isPinned: true }));
       }
 
-      // Remaining tabs.
-      for (let i = 1; i < w.tabs.length; i++) {
+      const orderedTabIds = [];
+      for (let i = 0; i < w.tabs.length; i++) {
+        if (i === activeIdx) {
+          orderedTabIds.push(activeTabController?.tabId);
+          continue;
+        }
         const t = w.tabs[i];
-        this.tabManager.createTab({
+        const tabController = this.tabManager.createTab({
           windowId: windowController.windowId,
           url: t.url,
+          title: t.title || undefined,
+          favicon: t.favicon || undefined,
           isPinned: !!t.isPinned,
           makeActive: false,
+          deferLoad: true,
         });
+        orderedTabIds.push(tabController.tabId);
       }
 
-      // Restore active-tab selection (only meaningful when not the first tab,
-      // which is already active by default).
-      const targetIdx = Math.min(Math.max(w.activeTabIndex || 0, 0), w.tabs.length - 1);
-      if (targetIdx > 0) {
-        const state = this.store.getState();
-        const tabIds = state.windows.windows[windowController.windowId]?.tabIds || [];
-        const targetTabId = tabIds[targetIdx];
-        if (targetTabId) {
-          windowController.switchToTab(targetTabId);
-        }
+      // Tabs before the active one were appended after it; put them back
+      // in their saved order.
+      if (activeIdx > 0 && orderedTabIds.every(Boolean)) {
+        this.store.dispatch(reorderTabsInWindow({ windowId: windowController.windowId, tabIds: orderedTabIds }));
+      }
+
+      if (typeof windowController.loadDeferredTabsInBackground === 'function') {
+        windowController.loadDeferredTabsInBackground();
       }
 
       restoredAny = true;
@@ -293,10 +319,17 @@ class AppController {
    */
   saveTabState() {
     try {
-      const store = new Store();
+      const store = this.getPrefs();
       if (!store.get('restoreTabsOnStartup', false)) return;
       const snapshot = this.buildSessionSnapshot();
-      if (snapshot) store.set(SESSION_KEY, snapshot);
+      if (!snapshot) return;
+      // The debounced auto-save fires after any state change (window
+      // moves, focus, loading flags). Skip the synchronous config.json
+      // rewrite when the saved tabs haven't actually changed.
+      const json = JSON.stringify(snapshot.windows);
+      if (json === this.lastSavedSessionJSON) return;
+      store.set(SESSION_KEY, snapshot);
+      this.lastSavedSessionJSON = json;
     } catch (error) {
       log.error('Failed to save session:', error);
     }

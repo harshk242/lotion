@@ -51,6 +51,9 @@ class TabManager {
    * @param {boolean} [options.makeActive] - Whether to make this tab active
    * @param {boolean} [options.isPinned] - Whether to pin this tab
    * @param {string} [options.insertAfterTabId] - Insert new tab after this tab ID
+   * @param {string} [options.favicon] - Initial favicon (e.g. from a restored session)
+   * @param {boolean} [options.deferLoad] - Create the tab without loading its URL
+   *   until it is shown or explicitly loaded (see TabController#ensureLoaded)
    * @returns {TabController} The created tab controller
    */
   createTab({
@@ -61,6 +64,8 @@ class TabManager {
     makeActive = true,
     isPinned = false,
     insertAfterTabId = null,
+    favicon,
+    deferLoad = false,
   }) {
     if (this.tabs.has(tabId)) {
       log.warn(`Tab ${tabId} already exists, returning existing tab`);
@@ -76,6 +81,7 @@ class TabManager {
         parentWindowId: windowId,
         url,
         title,
+        favicon,
         isPinned,
       })
     );
@@ -95,6 +101,7 @@ class TabManager {
       windowId,
       store: this.store,
       initialUrl: url,
+      deferLoad,
     });
 
     // Initialize the tab (creates WebContentsView)
