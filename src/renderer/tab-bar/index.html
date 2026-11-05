@@ -300,7 +300,11 @@
     .tab-list {
       display: flex;
       align-items: center;
-      flex: 1;
+      /* Size to the tabs (shrinking/scrolling when they overflow) so the
+         new-tab button sits right after the last tab instead of being
+         pushed to the far right. */
+      flex: 0 1 auto;
+      min-width: 0;
       overflow-x: auto;
       overflow-y: hidden;
       /* Hide the scrollbar until the user hovers — keeps the tab bar
@@ -494,6 +498,9 @@
       color: var(--text-secondary);
       transition: background-color 0.2s;
       flex-shrink: 0;
+      /* Absorb the leftover space (still a window drag area) so the
+         window controls stay pinned right. */
+      margin-right: auto;
     }
 
     .new-tab-btn:hover {

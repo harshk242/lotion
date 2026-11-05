@@ -188,3 +188,18 @@ test('saves tab titles and skips rewriting an unchanged session', () => {
   expect(writes.filter((k) => k === 'sessionTabs').length).toBe(2);
   expect(data.sessionTabs.windows[0].tabs[0].title).toBe('Renamed');
 });
+
+test('re-enables tab restore once over the stored v1.6.0 default, then respects the toggle', () => {
+  const { migrateRestoreTabsDefault, PREFERENCE_DEFAULTS } = require('../src/main/preferences');
+  expect(PREFERENCE_DEFAULTS.restoreTabsOnStartup).toBe(true);
+  const data = { restoreTabsOnStartup: false };
+  const store = {
+    get: (key, fallback) => (key in data ? data[key] : fallback),
+    set: (key, value) => { data[key] = value; },
+  };
+  migrateRestoreTabsDefault(store);
+  expect(data.restoreTabsOnStartup).toBe(true);
+  data.restoreTabsOnStartup = false; // user turns it off from the menu
+  migrateRestoreTabsDefault(store);
+  expect(data.restoreTabsOnStartup).toBe(false);
+});

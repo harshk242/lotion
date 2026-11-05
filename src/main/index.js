@@ -692,7 +692,7 @@ ipcMain.handle('show-logo-menu', async (event) => {
   const store = localStore;
   const spellCheckEnabled = store.get('spellCheckEnabled', true); // Default to enabled
   const currentTheme = store.get('theme', 'default'); // Default to Notion's default theme
-  const restoreTabsOnStartup = store.get('restoreTabsOnStartup', false);
+  const restoreTabsOnStartup = store.get('restoreTabsOnStartup', true);
 
   // Theme switcher helper function
   const switchTheme = async (themeName) => {

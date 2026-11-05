@@ -189,7 +189,7 @@ class AppController {
         if (!store.has('restoreTabsOnStartup')) store.set('restoreTabsOnStartup', true);
       }
     }
-    if (!store.get('restoreTabsOnStartup', false)) {
+    if (!store.get('restoreTabsOnStartup', true)) {
       return false;
     }
 
@@ -320,7 +320,7 @@ class AppController {
   saveTabState() {
     try {
       const store = this.getPrefs();
-      if (!store.get('restoreTabsOnStartup', false)) return;
+      if (!store.get('restoreTabsOnStartup', true)) return;
       const snapshot = this.buildSessionSnapshot();
       if (!snapshot) return;
       // The debounced auto-save fires after any state change (window
